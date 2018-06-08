@@ -1,0 +1,220 @@
+package com.skytech.justice.hr.storage.user;
+
+import com.alibaba.fastjson.JSONObject;
+import com.xxx.justice.hr.core.sys.IPermissionStorage;
+import com.xxx.justice.hr.core.user.ILoginStorage;
+import com.xxx.justice.hr.core.user.UserBean;
+import com.xxx.justice.hr.core.user.UserDetail;
+import com.xxx.justice.hr.dao.orgTeamManage.ISysOrgDAO;
+import com.xxx.justice.hr.dao.sys.IRoleDAO;
+import com.xxx.justice.hr.dao.user.ILoginCheckDAO;
+import com.xxx.justice.hr.dao.user.IUserDAO;
+import com.xxx.justice.hr.exceptions.LoginFailueException;
+import com.xxx.justice.hr.util.Normal;
+import com.xxx.justice.hr.web.user.SessionUser;
+import com.xxx.justice.hr.web.user.validation.LoginInfo;
+import com.xxx.justice.pikachu.security.login.cache.ILoginSession;
+import com.xxx.justice.pikachu.security.login.extention.ILoginValidator;
+import com.xxx.justice.pikachu.security.login.service.ILoginService;
+import com.xxx.justice.pikachu.security.support.SHA512Hash;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.Resource;
+import java.util.List;
+
+/**
+ * login validator
+ * Created by Jancey on 2014/7/8.
+ */
+@Service
+public class LoginStorage implements ILoginStorage,ILoginValidator {
+
+
+    @Resource
+    private ILoginCheckDAO loginCheckDAO;
+
+    @Resource
+    private ILoginService loginService;
+
+    @Resource
+    private ILoginSession loginSession;
+
+    @Resource
+    private IUserDAO userDAO;
+    @Resource
+    private ISysOrgDAO sysOrgDAO;
+    /*@Resource
+    private IUserBaseCache userBaseCache;*/
+    @Resource
+    private IPermissionStorage permissionStorage;
+    @Resource
+    private IRoleDAO roleDAO;
+
+    /*
+    * 查找机构信息
+    * auther Johnson
+    *
+    *       param.pkid 节点id
+    * */
+    @Override
+    public JSONObject findOrgInfo(JSONObject orginfo){
+        JSONObject returninfo =new JSONObject();
+        //检查信息是否可用
+        if(null!=orginfo.get("pkid")){
+            try{
+                List<JSONObject> retList=loginCheckDAO.findOrgInfo(orginfo);
+                returninfo.put("result",retList);
+                returninfo.put("flag",Normal.FLAG_SUCCESS);
+                returninfo.put("message",Normal.MESSAGE_SUCCESS);
+            }catch (Exception e){
+                e.printStackTrace();
+                returninfo.put("flag", Normal.FLAG_ERROR);
+                returninfo.put("message",Normal.ERROR_DATABASE);
+                return returninfo;
+            }
+        }else{
+            returninfo.put("flag", Normal.FLAG_ERROR);
+            returninfo.put("message",Normal.MESSAGE_PARAM_ERROE);
+        }
+        return returninfo;
+    }
+
+    /*
+    * 获取大屏人员展示信息列表
+    * auther Johnson
+    *
+    * */
+    public JSONObject findShowPeopleInfo(JSONObject peoinfo){
+        return null;
+    }
+
+    /*
+    * 获取大屏地图信息列表
+    * auther Johnson
+    *
+    * */
+    public JSONObject findMapPeopleInfo(JSONObject peoinfo){
+        JSONObject returninfo =new JSONObject();
+            try{
+                List<JSONObject> retList=loginCheckDAO.findMapPeopleInfo(peoinfo);
+                returninfo.put("item",retList);
+                returninfo.put("flag",Normal.FLAG_SUCCESS);
+                returninfo.put("message",Normal.MESSAGE_SUCCESS);
+            }catch (Exception e){
+                e.printStackTrace();
+                returninfo.put("flag", Normal.FLAG_ERROR);
+                returninfo.put("message",Normal.ERROR_DATABASE);
+                return returninfo;
+            }
+
+        return returninfo;
+    }
+
+    @Override
+    public String checkLogin(String loginId, String password) {
+        JSONObject param = new JSONObject();
+        param.put("loginid", loginId.toLowerCase());//账户名全部转化为小写
+        List<JSONObject> list = loginCheckDAO.list(param);
+        if (list.isEmpty()) {
+            throw new LoginFailueException();
+        }
+        JSONObject loginInfo = list.get(0);
+        String salt = loginInfo.getString("salt");
+        SHA512Hash sha512Hash = new SHA512Hash();
+        String encryptedPwd = sha512Hash.hashToHex(salt.concat(password));
+        if(loginInfo.getString("password").equals(encryptedPwd)){
+            return loginInfo.getString("userid");
+        }
+        throw new LoginFailueException();
+    }
+
+
+    @Override
+    public SessionUser userLogin(LoginInfo loginInFo) {
+        String loginKey = loginService.doLogin(loginInFo.getLoginId(), loginInFo.getPassword(), loginInFo.getKeyId(), true);
+        JSONObject loginInfo = loginSession.checkLoginStatus(loginKey);
+        JSONObject userJson = userDAO.findOne(loginInfo.getString("userid"));
+        //JSONObject userJson = userDAO.findOne(loginInfo[0]);
+        UserBean user = new UserBean(userJson);
+        if (userJson.getString("org_id") != null){
+            JSONObject orgJson = sysOrgDAO.findOne(userJson.getString("org_id"));
+            user.setOrgName(orgJson.getString("org_name"));
+        }
+        SessionUser sessionUser = new SessionUser(user);
+        sessionUser.setLoginKey(loginKey);
+        sessionUser.setDetail(getUserDetail(sessionUser.getPkid()));
+        return sessionUser;
+    }
+
+    @Override
+    public UserDetail getUserDetail(String userPK) {
+        UserDetail permissionDetail = new UserDetail();
+        fillOperations(userPK, permissionDetail);
+        fillRoles(userPK, permissionDetail);
+        return permissionDetail;
+    }
+
+    public void fillOperations(String userPK, UserDetail permissionDetail) {
+        permissionDetail.setOperations(permissionStorage.listOperationCodesOfUser(userPK));
+    }
+
+    public void fillRoles(String userPK, UserDetail permissionDetail) {
+        JSONObject queryRoleParam = new JSONObject();
+        queryRoleParam.put("pkid", userPK);
+        permissionDetail.setRolesJson(roleDAO.getRolesByUserID(queryRoleParam));
+    }
+
+
+    //验证修改密码原密码是否输入正确
+    @Override
+    public String checkMosdify(String loginId, String password) {
+        JSONObject param = new JSONObject();
+        param.put("loginid", loginId.toLowerCase());//账户名全部转化为小写
+        List<JSONObject> list = loginCheckDAO.list(param);
+        if (list.isEmpty()) {
+            throw new LoginFailueException();
+        }
+        JSONObject loginInfo = list.get(0);
+        String salt = loginInfo.getString("salt");
+        SHA512Hash sha512Hash = new SHA512Hash();
+        String encryptedPwd = sha512Hash.hashToHex(salt.concat(password));
+        if(loginInfo.getString("password").equals(encryptedPwd)){
+            return loginInfo.getString("userid");
+        }else{
+            return "false";
+        }
+
+    }
+
+
+    //修改密码
+    @Override
+    public String  changePassword(JSONObject jsonObject){
+        String userId = jsonObject.getString("userId");
+        String oldPassword = jsonObject.getString("oldPassword");
+        String newPassword = jsonObject.getString("newPassword");
+        JSONObject param = new JSONObject();
+        param.put("userid",userId);
+        List<JSONObject> loginInfoList = loginCheckDAO.list(param);
+        if (!loginInfoList.isEmpty()){
+            for (JSONObject loginInfo:loginInfoList){
+                {
+                    String userid = checkMosdify(loginInfo.getString("loginid"),oldPassword);
+                    if(!userid.equals("false")){
+                        SHA512Hash sha512Hash = new SHA512Hash();
+                        String encryptedPwd = sha512Hash.hashToHex(loginInfo.getString("salt").concat(newPassword));
+                        loginInfo.put("password",encryptedPwd);
+                        loginCheckDAO.update(loginInfo);
+                    }else{
+                        return "false";
+                    }
+
+
+                }
+            }
+        }
+
+        return "success";
+    }
+
+}
